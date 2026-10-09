@@ -1,0 +1,17 @@
+{
+  "name": "localcode",
+  "version": "0.1.0",
+  "description": "pi coding agent wrapper for the abila inference gateway at llm.masa.gi",
+  "keywords": ["pi", "coding-agent", "llm", "abila", "masa"],
+  "license": "UNLICENSED",
+  "private": true,
+  "bin": {
+    "localcode": "./bin/localcode"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "./test/smoke.sh"
+  }
+}

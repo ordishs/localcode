@@ -1,0 +1,14 @@
+{
+  "defaultProvider": "masa",
+  "defaultModel": "Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp",
+  "defaultThinkingLevel": "off",
+  "enabledModels": ["masa/*"],
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 8000
+  },
+  "cacheWarming": "off",
+  "enableInstallTelemetry": false,
+  "quietStartup": false
+}

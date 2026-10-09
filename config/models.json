@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "masa": {
+      "baseUrl": "https://llm.masa.gi/v1",
+      "api": "openai-completions",
+      "apiKey": "$MASA_TOKEN",
+      "models": [
+        {
+          "id": "Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp",
+          "name": "abila gateway (llm.masa.gi)",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 131072,
+          "maxTokens": 8192,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}

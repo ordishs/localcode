@@ -1,0 +1,250 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+
+VERSION="0.1.0"
+ROOT="${0:A:h:h}"
+LC_HOME="${LOCALCODE_HOME:-$HOME/.localcode}"
+BASE_URL="${LOCALCODE_BASE_URL:-https://llm.masa.gi/v1}"
+MODEL="${LOCALCODE_MODEL:-Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp}"
+CONTEXT_TOKENS="${LOCALCODE_CONTEXT:-131072}"
+MAX_TOKENS="${LOCALCODE_MAX_TOKENS:-8192}"
+BODY_LIMIT_BYTES="${LOCALCODE_BODY_LIMIT_BYTES:-1000000}"
+export MASA_TOKEN="${MASA_TOKEN:-${LOCAL_LLM_API_KEY:-}}"
+
+usage() {
+  cat <<'EOF'
+localcode wraps the pi coding agent and points it at the abila inference gateway.
+
+Usage:
+  localcode [pi args...]          start pi on the gateway model
+  localcode init                  create or refresh the config dir
+  localcode doctor                check pi, token, gateway, gh, and web tools
+  localcode models                list the models the gateway advertises
+  localcode models --write        store the advertised model and its budget in config
+  localcode install <source>      add your own tooling, for example npm:pi-web-access
+  localcode remove <source>       remove tooling you installed
+  localcode packages              list tooling installed in the config dir
+  localcode exa on|off            toggle the bundled Exa web tools
+  localcode gh <args>             run GitHub CLI with the same environment
+  localcode config                print resolved paths and settings
+  localcode version               print versions
+
+Environment:
+  MASA_TOKEN                 gateway access token (falls back to LOCAL_LLM_API_KEY)
+  EXA_API_KEY                optional, enables the bundled web_search tool
+  LOCALCODE_HOME             config dir, default ~/.localcode
+  LOCALCODE_BASE_URL         gateway endpoint, default https://llm.masa.gi/v1
+  LOCALCODE_MODEL            model id to advertise
+  LOCALCODE_CONTEXT          context budget in tokens, default 131072
+  LOCALCODE_MAX_TOKENS       output budget in tokens, default 8192
+  LOCALCODE_BODY_LIMIT_BYTES gateway request body cap, default 1000000
+
+Install pi from https://pi.dev first:
+  npm install -g @earendil-works/pi-coding-agent
+EOF
+}
+
+die() {
+  print -u2 "localcode: $1"
+  exit 1
+}
+
+need_tool() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 is required. $2"
+}
+
+exa_enabled() {
+  [[ ! -e "$LC_HOME/exa.disabled" ]]
+}
+
+seed() {
+  mkdir -p "$LC_HOME/extensions"
+  for file in settings.json models.json; do
+    [[ -e "$LC_HOME/$file" ]] || cp "$ROOT/config/$file" "$LC_HOME/$file"
+  done
+  cp "$ROOT/extensions/exa.ts" "$LC_HOME/extensions/exa.ts"
+  apply_budget
+}
+
+apply_budget() {
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg url "$BASE_URL" --arg model "$MODEL" --argjson ctx "$CONTEXT_TOKENS" --argjson out "$MAX_TOKENS" \
+    '.providers.masa.baseUrl = $url
+     | .providers.masa.models[] |= (select(.id == $model) | .contextWindow = $ctx | .maxTokens = $out)' \
+    "$LC_HOME/models.json" >"$tmp" || die "cannot rewrite models.json. Is jq installed and is the file valid JSON?"
+  mv "$tmp" "$LC_HOME/models.json"
+}
+
+gateway_models() {
+  local out
+  out="$(curl -sS -m 30 -H "Authorization: Bearer $MASA_TOKEN" "$BASE_URL/models")" || die "gateway request failed: $BASE_URL/models"
+  print -r -- "$out" | jq -e '.data | type == "array"' >/dev/null 2>&1 || die "gateway returned no model list: $(print -r -- "$out" | head -c 300)"
+  print -r -- "$out" | jq -r '.data[] | [.id, (.max_model_len // 0)] | @tsv'
+}
+
+check() {
+  local label="$1" ok="$2" detail="${3:-}"
+  if [[ "$ok" == "0" ]]; then
+    print -r -- "ok       $label${detail:+  $detail}"
+  else
+    print -r -- "PROBLEM  $label${detail:+  $detail}"
+    rc=1
+  fi
+}
+
+case "${1:-}" in
+  run | init | doctor | models | install | remove | uninstall | packages | exa | gh | config | version | help | --help | -h)
+    cmd="${1:-run}"
+    shift
+    ;;
+  *)
+    cmd=run
+    ;;
+esac
+
+case "$cmd" in
+  run)
+    need_tool pi "Install pi from https://pi.dev: npm install -g @earendil-works/pi-coding-agent"
+    [[ -n "$MASA_TOKEN" ]] || die "export MASA_TOKEN=<your gateway token>, or set LOCAL_LLM_API_KEY"
+    seed
+    args=(--model "masa/$MODEL" --append-system-prompt "$ROOT/config/system.md")
+    if exa_enabled; then
+      args+=(-e "$LC_HOME/extensions/exa.ts")
+    fi
+    PI_CODING_AGENT_DIR="$LC_HOME" exec pi "${args[@]}" "$@"
+    ;;
+
+  init)
+    seed
+    exa_state=off
+    if exa_enabled; then exa_state=on; fi
+    print -r -- "config dir: $LC_HOME"
+    print -r -- "model:      masa/$MODEL"
+    print -r -- "gateway:    $BASE_URL"
+    print -r -- "web tools:  bundled Exa $exa_state"
+    ;;
+
+  doctor)
+    rc=0
+    if command -v pi >/dev/null 2>&1; then ok=0; else ok=1; fi
+    ver="$(pi --version 2>/dev/null | head -1 || true)"
+    check "pi on PATH" "$ok" "${ver:-missing, install from https://pi.dev}"
+    if [[ -n "$ver" ]]; then
+      low="$(printf '%s\n0.86.0\n' "$ver" | sort -V | head -1)"
+      if [[ "$low" != "0.86.0" ]]; then
+        print -r -- "note     pi $ver is older than 0.86.0. Third-party web tools stay in the prompt at all times. Run: pi update --self"
+      fi
+    fi
+    if command -v jq >/dev/null 2>&1; then ok=0; else ok=1; fi
+    check "jq on PATH" "$ok"
+    if command -v git >/dev/null 2>&1; then ok=0; else ok=1; fi
+    check "git on PATH" "$ok"
+    if command -v gh >/dev/null 2>&1; then ok=0; else ok=1; fi
+    check "gh on PATH" "$ok" "$(gh --version 2>/dev/null | head -1 || print 'missing, install: brew install gh')"
+    if [[ -n "$MASA_TOKEN" ]]; then ok=0; detail="len ${#MASA_TOKEN}, value withheld"; else ok=1; detail="get a token from the llm_proxy owner, then: export MASA_TOKEN=<token>"; fi
+    check "MASA_TOKEN set" "$ok" "  $detail"
+    if [[ -n "$MASA_TOKEN" ]]; then
+      if models="$(gateway_models 2>&1)"; then ok=0; else ok=1; fi
+      check "gateway model list" "$ok"
+      if [[ $ok -eq 0 ]]; then
+        print -r -- "$models" | sed 's/^/           /'
+        if ! print -r -- "$models" | grep -q "^$MODEL"; then
+          print -r -- "note     advertised list does not contain $MODEL. Run: localcode models --write"
+        fi
+      else
+        print -r -- "           $models"
+      fi
+    fi
+    budget=$(( CONTEXT_TOKENS * 4 ))
+    if [[ $budget -lt $BODY_LIMIT_BYTES ]]; then ok=0; else ok=1; fi
+    check "request body budget" "$ok" \
+      "${CONTEXT_TOKENS} tokens x ~4 bytes = ${budget} bytes, gateway caps at ${BODY_LIMIT_BYTES}. Lower LOCALCODE_CONTEXT if you see HTTP 413."
+    if [[ -d "$LC_HOME" ]] || mkdir -p "$LC_HOME" 2>/dev/null; then ok=0; else ok=1; fi
+    if [[ $ok -eq 0 ]]; then
+      if touch "$LC_HOME/.probe" 2>/dev/null; then ok=0; else ok=1; fi
+      check "config dir writable" "$ok" "$LC_HOME"
+      rm -f "$LC_HOME/.probe"
+    else
+      check "config dir writable" 1 "$LC_HOME"
+    fi
+    if command -v gh >/dev/null 2>&1; then
+      auth="$(gh auth status 2>&1 || true)"
+      if print -r -- "$auth" | grep -q 'Logged in'; then ok=0; else ok=1; fi
+      check "gh authenticated" "$ok"
+      print -r -- "$auth" | sed 's/^/           /'
+    fi
+    if [[ -n "${EXA_API_KEY:-}" ]]; then ok=0; detail="bundled web_search ready, value withheld"; else ok=1; detail="bundled web_search errors until you export one, or install another package"; fi
+    check "EXA_API_KEY set" "$ok" "  $detail"
+    print -r -- "note     the gateway allows 2 concurrent requests per token. Run one localcode session per token."
+    exit "$rc"
+    ;;
+
+  models)
+    need_tool jq
+    [[ -n "$MASA_TOKEN" ]] || die "export MASA_TOKEN first"
+    if [[ "${1:-}" == "--write" ]]; then
+      first="$(gateway_models | head -1 | cut -f1)"
+      [[ -n "$first" ]] || die "gateway returned no models"
+      MODEL="$first"
+      apply_budget
+      print -r -- "stored model: masa/$MODEL"
+      print -r -- "also set LOCALCODE_MODEL=$MODEL to make it your default for this shell"
+    else
+      gateway_models
+    fi
+    ;;
+
+  install | remove | uninstall)
+    need_tool pi
+    [[ $# -ge 1 ]] || die "usage: localcode $cmd <source>"
+    PI_CODING_AGENT_DIR="$LC_HOME" exec pi "$cmd" "$@"
+    ;;
+
+  packages)
+    need_tool pi
+    PI_CODING_AGENT_DIR="$LC_HOME" exec pi list
+    ;;
+
+  exa)
+    case "${1:-}" in
+      off) mkdir -p "$LC_HOME" && touch "$LC_HOME/exa.disabled" && print -r -- "bundled Exa tools off" ;;
+      on) rm -f "$LC_HOME/exa.disabled" && print -r -- "bundled Exa tools on" ;;
+      *) die "usage: localcode exa on|off" ;;
+    esac
+    ;;
+
+  gh)
+    need_tool gh "Install: brew install gh, then run: gh auth login"
+    exec gh "$@"
+    ;;
+
+  config)
+    exa_state=off
+    if exa_enabled; then exa_state=on; fi
+    print -r -- "project:       $ROOT"
+    print -r -- "config dir:    $LC_HOME"
+    print -r -- "gateway:       $BASE_URL"
+    print -r -- "model:         masa/$MODEL"
+    print -r -- "context:       $CONTEXT_TOKENS tokens"
+    print -r -- "max output:    $MAX_TOKENS tokens"
+    print -r -- "web tools:     bundled Exa $exa_state"
+    print -r -- "MASA_TOKEN:    ${MASA_TOKEN:+set, len ${#MASA_TOKEN}}"
+    print -r -- "EXA_API_KEY:   ${EXA_API_KEY:+set}"
+    ;;
+
+  version)
+    print -r -- "localcode $VERSION"
+    print -r -- "pi $(pi --version 2>/dev/null || print 'not installed')"
+    print -r -- "node $(node -v 2>/dev/null || print 'not installed')"
+    ;;
+
+  help | --help | -h)
+    usage
+    ;;
+
+  *)
+    usage
+    die "unknown command: $cmd"
+    ;;
+esac
