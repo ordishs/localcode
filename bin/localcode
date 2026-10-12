@@ -6,8 +6,8 @@ ROOT="${0:A:h:h}"
 LC_HOME="${LOCALCODE_HOME:-$HOME/.localcode}"
 BASE_URL="${LOCALCODE_BASE_URL:-https://llm.masa.gi/v1}"
 MODEL="${LOCALCODE_MODEL:-Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp}"
-CONTEXT_TOKENS="${LOCALCODE_CONTEXT:-131072}"
-MAX_TOKENS="${LOCALCODE_MAX_TOKENS:-8192}"
+CONTEXT_TOKENS="${LOCALCODE_CONTEXT:-262144}"
+MAX_TOKENS="${LOCALCODE_MAX_TOKENS:-32768}"
 BODY_LIMIT_BYTES="${LOCALCODE_BODY_LIMIT_BYTES:-1000000}"
 RELEASES_URL="${LOCALCODE_RELEASES_URL:-https://api.github.com/repos/ordishs/localcode/releases/latest}"
 TAP_FORMULA="ordishs/tap/localcode"
@@ -38,8 +38,8 @@ Environment:
   LOCALCODE_HOME             config dir, default ~/.localcode
   LOCALCODE_BASE_URL         gateway endpoint, default https://llm.masa.gi/v1
   LOCALCODE_MODEL            model id to advertise
-  LOCALCODE_CONTEXT          context budget in tokens, default 131072
-  LOCALCODE_MAX_TOKENS       output budget in tokens, default 8192
+  LOCALCODE_CONTEXT          context budget in tokens, default 262144
+  LOCALCODE_MAX_TOKENS       output budget in tokens, default 32768
   LOCALCODE_BODY_LIMIT_BYTES gateway request body cap, default 1000000
   LOCALCODE_RELEASES_URL     latest release endpoint, default the GitHub API for ordishs/localcode
 

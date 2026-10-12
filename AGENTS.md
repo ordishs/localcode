@@ -23,11 +23,12 @@ small.
 
 Confirm again before relying on these; the gateway owner can change them.
 
-- Body cap 1 MB. Over-limit requests return HTTP 413 `request body too large`.
+- Body cap 32 MiB. Over-limit requests return HTTP 413 `request body too large`.
+- Output cap 32768 tokens. The gateway clamps larger `max_tokens` values.
 - The gateway rewrites the `model` field. Client model choice has no effect.
 - 2 concurrent requests and 30 requests per minute per token.
-- The advertised model reports a 262144 context window. The body cap binds first, so the
-  default budget here is 131072 tokens.
+- The advertised model reports a 262144 context window. The default budget here is 262144
+  tokens.
 
 ## Style
 

@@ -8,7 +8,7 @@ per-person and its usage is billed per token, so keep requests purposeful.
 The gateway rewrites the `model` field. Asking for a different model than the one
 configured has no effect. Do not claim you switched models.
 
-The gateway rejects a request body over 1 MB with HTTP 413 `request body too large`. A
+The gateway rejects a request body over 32 MiB with HTTP 413 `request body too large`. A
 long conversation, a large file read, or a big tool result can push the body over it. Read
 targeted line ranges instead of whole large files, and let compaction do its job.
 

@@ -122,10 +122,10 @@ ask otherwise.
 
 These were measured against the live gateway, not assumed:
 
-- A request body over 1 MB returns HTTP 413 `request body too large`. A 1.3 MB test body
-  was rejected. The default context budget is therefore 131072 tokens, about 4x headroom,
-  not the 262144 the model advertises. Raise it with `LOCALCODE_CONTEXT` only if you know
-  your bodies stay small.
+- The gateway rejects a request body over 32 MiB with HTTP 413 `request body too large`.
+  The default context budget is the 262144 tokens the model advertises. Lower it with
+  `LOCALCODE_CONTEXT` if you need smaller requests.
+- The gateway clamps output tokens to 32768. The default output budget is 32768.
 - The gateway rewrites the `model` field to the one allowed model. A request for
   `totally-bogus-model-xyz` returned HTTP 200 with the configured model. The model choice
   is made by the gateway owner, not by you.

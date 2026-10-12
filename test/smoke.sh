@@ -86,10 +86,10 @@ else
   bad "models.json holds no literal token"
 fi
 ctx="$(jq -r '.providers.masa.models[0].contextWindow' "$LOCALCODE_HOME/models.json" 2>/dev/null)"
-if [[ "$ctx" == "131072" ]]; then
-  ok "context budget fits the 1 MB gateway cap"
+if [[ "$ctx" == "262144" ]]; then
+  ok "context budget matches the model window"
 else
-  bad "context budget fits the 1 MB gateway cap (got ${ctx:-none})"
+  bad "context budget matches the model window (got ${ctx:-none})"
 fi
 
 step "doctor"
