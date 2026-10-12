@@ -101,6 +101,12 @@ Both register web tools with different names: the bundled tool is `websearch` an
 `webfetch`; `pi-web-access` registers `web_search` and `fetch_content`. Turning Exa off
 when you install a package keeps the model from seeing four similar tools.
 
+`webfetch` reads at most 2 MB and turns HTML into plain text. It removes script blocks,
+style blocks, and comments. It replaces each other tag with a space. If a script block,
+style block, comment, or tag has no end, `webfetch` drops the rest of the page. A browser
+also hides the text after an open script block or comment, so a crafted page cannot use
+one to send hidden text to the model. The conversion time is linear in the page size.
+
 ## GitHub
 
 ```bash
@@ -159,6 +165,12 @@ make test
 
 The suite runs `doctor`, the model round trip, the bundled web tools, and a `gh` call. It
 uses a temporary config dir, so it does not touch yours.
+
+`test/pagetext.test.mjs` tests the HTML-to-text step of `webfetch` and needs no token. It
+loads `extensions/exa.ts` with Node type stripping and replaces the pi imports with stubs.
+Crafted 2 MB pages must each convert in less than 1 second. HTML samples and closed random
+markup must give the same text as the earlier regex version. Run it alone with
+`node test/pagetext.test.mjs`.
 
 ## Release
 

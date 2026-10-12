@@ -37,12 +37,79 @@ async function boundedText(response: Response, limit = 2_000_000): Promise<strin
   }
 }
 
-function pageText(body: string, contentType: string): string {
+function removeBlocks(html: string): string {
+  const opener = /<(script|style)\b/gi;
+  const closers: Record<string, RegExp> = { script: /<\/script\s*>/gi, style: /<\/style\s*>/gi };
+  const parts: string[] = [];
+  let pos = 0;
+
+  while (true) {
+    opener.lastIndex = pos;
+    const open = opener.exec(html);
+    if (!open) break;
+    parts.push(html.slice(pos, open.index));
+
+    const tagEnd = html.indexOf(">", opener.lastIndex);
+    if (tagEnd < 0) return parts.join("");
+
+    const closer = closers[open[1].toLowerCase()];
+    closer.lastIndex = tagEnd + 1;
+    if (!closer.exec(html)) return parts.join("");
+    pos = closer.lastIndex;
+  }
+
+  parts.push(html.slice(pos));
+  return parts.join("");
+}
+
+function removeComments(html: string): string {
+  const parts: string[] = [];
+  let pos = 0;
+
+  while (true) {
+    const open = html.indexOf("<!--", pos);
+    if (open < 0) break;
+    parts.push(html.slice(pos, open));
+
+    const close = html.indexOf("-->", open + 4);
+    if (close < 0) return parts.join("");
+    pos = close + 3;
+  }
+
+  parts.push(html.slice(pos));
+  return parts.join("");
+}
+
+function replaceTags(html: string): string {
+  const parts: string[] = [];
+  let pos = 0;
+  let from = 0;
+
+  while (true) {
+    const open = html.indexOf("<", from);
+    if (open < 0) break;
+
+    const close = html.indexOf(">", open + 1);
+    if (close < 0) {
+      parts.push(html.slice(pos, open));
+      return parts.join("");
+    }
+    if (close === open + 1) {
+      from = close;
+      continue;
+    }
+
+    parts.push(html.slice(pos, open), " ");
+    pos = from = close + 1;
+  }
+
+  parts.push(html.slice(pos));
+  return parts.join("");
+}
+
+export function pageText(body: string, contentType: string): string {
   if (!contentType.includes("html")) return body;
-  return body
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
-    .replace(/<!--[^]*?-->/g, "")
-    .replace(/<[^>]+>/g, " ")
+  return replaceTags(removeComments(removeBlocks(body)))
     .replace(/&nbsp;/gi, " ")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")

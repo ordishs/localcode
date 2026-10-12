@@ -47,6 +47,19 @@ expect_exists() {
 
 printf 'config dir: %s\n' "$LOCALCODE_HOME"
 
+step "webfetch page text"
+if command -v node >/dev/null 2>&1; then
+  out="$(node --test-reporter=spec "$ROOT/test/pagetext.test.mjs" 2>&1)"
+  if [[ $? -eq 0 ]]; then
+    ok "pageText is linear and keeps the old output for closed HTML"
+  else
+    bad "pageText is linear and keeps the old output for closed HTML"
+  fi
+  printf '%s\n' "$out" | sed 's/^/      | /'
+else
+  skip "pageText test (node is not installed)"
+fi
+
 if ! command -v pi >/dev/null 2>&1; then
   printf 'pi is not installed. Install from https://pi.dev, then re-run.\n'
   exit 2
