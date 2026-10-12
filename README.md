@@ -7,7 +7,8 @@ through the `gh` CLI you already use.
 
 ## Prerequisites
 
-- pi from https://pi.dev: `npm install -g @earendil-works/pi-coding-agent`
+- pi from https://pi.dev: `npm install -g @earendil-works/pi-coding-agent`. The Homebrew
+  install below adds pi for you.
 - A gateway token from the `llm_proxy` owner. Tokens are per person and usage is metered
   per token.
 - Optional, for the bundled search tool: an Exa API key.
@@ -15,20 +16,44 @@ through the `gh` CLI you already use.
 
 ## Quick start
 
+Install with Homebrew. It also installs `gh`, `jq`, and pi:
+
 ```bash
-git clone <repo> && cd localcode
+brew install ordishs/tap/localcode
+export MASA_TOKEN=<your gateway token>
+localcode doctor
+localcode
+```
+
+`doctor` tells you what is missing and what it will do.
+
+Or install from a clone:
+
+```bash
+git clone git@github.com:ordishs/localcode.git && cd localcode
 export MASA_TOKEN=<your gateway token>
 ./bin/localcode doctor
 ./bin/localcode
 ```
 
-`doctor` tells you what is missing and what it will do.
-
-Install as a command if you prefer:
+Install the clone as a command if you prefer:
 
 ```bash
 npm link        # then run: localcode doctor
 ```
+
+## Update
+
+```bash
+localcode update            # upgrade, then refresh the config dir
+localcode update --check    # only report the latest release
+```
+
+`update` detects how you installed localcode. A Homebrew install runs
+`brew upgrade ordishs/tap/localcode`. A clone runs `git pull --ff-only`. Both then run
+`localcode init`. `doctor` also tells you when a newer release exists.
+
+`init` keeps your `settings.json` and `models.json`. It overwrites `extensions/exa.ts`.
 
 ## How it works
 
@@ -113,6 +138,7 @@ Check what your token can actually use, and store it:
 localcode [pi args...]        start pi on the gateway model
 localcode doctor              check pi, token, gateway, gh, and web tools
 localcode init                create or refresh the config dir
+localcode update [--check]    upgrade localcode, or only report the latest release
 localcode models [--write]    list advertised models, or store one
 localcode install <source>    install your own tooling into the config dir
 localcode remove <source>     remove it
@@ -133,6 +159,18 @@ make test
 
 The suite runs `doctor`, the model round trip, the bundled web tools, and a `gh` call. It
 uses a temporary config dir, so it does not touch yours.
+
+## Release
+
+Maintainers only. The Homebrew formula is rendered from `packaging/localcode.rb.in` into
+the `ordishs/homebrew-tap` repo.
+
+```bash
+make release V=0.2.0                  # dry run, changes nothing
+make release V=0.2.0 ARGS=--publish   # bump, test, tag, release, update the tap
+```
+
+Set `TAP_DIR` if your tap clone is not at `brew --repository ordishs/tap`.
 
 ## Limits
 

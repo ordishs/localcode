@@ -1,4 +1,4 @@
-.PHONY: help doctor test init models link clean
+.PHONY: help doctor test init models link release clean
 
 help:
 	@sed -n 's/^##//p' Makefile
@@ -22,6 +22,10 @@ models:
 ## link: install the localcode command with npm
 link:
 	npm link
+
+## release: dry run of a release, V=<version>, add ARGS=--publish to publish
+release:
+	./scripts/release.sh $(V) $(ARGS)
 
 ## clean: remove the local npm link
 clean:

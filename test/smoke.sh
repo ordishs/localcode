@@ -162,6 +162,84 @@ else
   skip "gh passthrough (gh not installed)"
 fi
 
+step "version consistency"
+script_version="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$ROOT/bin/localcode")"
+pkg_version="$(jq -r .version "$ROOT/package.json")"
+if [[ -n "$script_version" && "$script_version" == "$pkg_version" ]]; then
+  ok "bin/localcode and package.json agree on $script_version"
+else
+  bad "version mismatch: bin/localcode=$script_version package.json=$pkg_version"
+fi
+
+step "update"
+UPD="$(mktemp -d -t localcode-update)"
+GITC=(git -c user.name=smoke -c user.email=smoke@example.invalid -c commit.gpgsign=false)
+printf '{"tag_name": "v99.0.0"}' >"$UPD/latest.json"
+out="$(LOCALCODE_RELEASES_URL="file://$UPD/latest.json" "$LOCALCODE" update --check 2>&1)"
+expect "update --check reports a newer release" 'latest: +99\.0\.0\. Run: localcode update' "$out"
+printf '{"tag_name": "v%s"}' "$script_version" >"$UPD/same.json"
+out="$(LOCALCODE_RELEASES_URL="file://$UPD/same.json" "$LOCALCODE" update --check 2>&1)"
+expect "update --check reports up to date" 'up to date' "$out"
+out="$(LOCALCODE_RELEASES_URL="file://$UPD/missing.json" "$LOCALCODE" update --check 2>&1)"
+expect "update --check survives an unreachable endpoint" 'latest: +unknown' "$out"
+out="$(LOCALCODE_RELEASES_URL="file://$UPD/latest.json" "$LOCALCODE" doctor 2>&1 || true)"
+expect "doctor notes a newer release" 'localcode 99\.0\.0 is available' "$out"
+out="$("$LOCALCODE" update --bogus 2>&1 || true)"
+expect "update rejects an unknown argument" 'usage: localcode update' "$out"
+
+git init -q --bare -b main "$UPD/origin.git"
+git init -q -b main "$UPD/clone"
+mkdir -p "$UPD/clone"
+cp -R "$ROOT/bin" "$ROOT/config" "$ROOT/extensions" "$UPD/clone/"
+"${GITC[@]}" -C "$UPD/clone" add -A
+"${GITC[@]}" -C "$UPD/clone" commit -q -m base
+git -C "$UPD/clone" remote add origin "$UPD/origin.git"
+git -C "$UPD/clone" push -q -u origin main
+git clone -q "$UPD/origin.git" "$UPD/other"
+printf 'new\n' >"$UPD/other/NEWFILE"
+"${GITC[@]}" -C "$UPD/other" add -A
+"${GITC[@]}" -C "$UPD/other" commit -q -m next
+git -C "$UPD/other" push -q origin main
+out="$(LOCALCODE_HOME="$UPD/home-clone" "$UPD/clone/bin/localcode" update 2>&1)"
+expect "git clone update runs init after the pull" 'config dir: .*home-clone' "$out"
+expect_exists "git clone update pulled the new commit" "$UPD/clone/NEWFILE"
+
+printf '# local edit\n' >>"$UPD/clone/bin/localcode"
+printf '# upstream edit\n' >>"$UPD/other/bin/localcode"
+"${GITC[@]}" -C "$UPD/other" commit -q -am again
+git -C "$UPD/other" push -q origin main
+out="$(LOCALCODE_HOME="$UPD/home-clone" "$UPD/clone/bin/localcode" update 2>&1 || true)"
+expect "git clone update names the fix when the pull fails" 'Commit or stash local changes' "$out"
+
+KEG="$UPD/Cellar/localcode/0.0.0/libexec"
+mkdir -p "$KEG" "$UPD/opt/localcode" "$UPD/fakebin"
+cp -R "$ROOT/bin" "$ROOT/config" "$ROOT/extensions" "$KEG/"
+mkdir -p "$UPD/opt/localcode/bin"
+ln -s "$KEG/bin/localcode" "$UPD/opt/localcode/bin/localcode"
+cat >"$UPD/fakebin/brew" <<FAKE
+#!/bin/sh
+echo "\$@" >>"$UPD/brew.log"
+if [ "\$1" = "--prefix" ]; then
+  echo "$UPD/opt/localcode"
+fi
+FAKE
+chmod +x "$UPD/fakebin/brew"
+out="$(PATH="$UPD/fakebin:$PATH" LOCALCODE_HOME="$UPD/home-brew" "$KEG/bin/localcode" update 2>&1)"
+expect "brew update runs init after the upgrade" 'config dir: .*home-brew' "$out"
+expect "brew update upgrades the tap formula" 'upgrade ordishs/tap/localcode' "$(cat "$UPD/brew.log")"
+
+PLAIN="$UPD/plain"
+mkdir -p "$PLAIN"
+cp -R "$ROOT/bin" "$ROOT/config" "$ROOT/extensions" "$PLAIN/"
+out="$("$PLAIN/bin/localcode" update 2>&1 || true)"
+expect "unknown install names the fix" 'brew install ordishs/tap/localcode' "$out"
+rm -rf "$UPD"
+
+step "formula template"
+tpl="$ROOT/packaging/localcode.rb.in"
+expect "template has url and sha256 slots" '@URL@' "$(cat "$tpl")"
+expect "template installs the wrapper tree" 'libexec.install "bin", "config", "extensions"' "$(cat "$tpl")"
+
 step "exa toggle"
 out="$("$LOCALCODE" exa off 2>&1)"
 expect "exa off" 'off' "$out"

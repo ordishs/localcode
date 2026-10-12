@@ -9,6 +9,8 @@ MODEL="${LOCALCODE_MODEL:-Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp}"
 CONTEXT_TOKENS="${LOCALCODE_CONTEXT:-131072}"
 MAX_TOKENS="${LOCALCODE_MAX_TOKENS:-8192}"
 BODY_LIMIT_BYTES="${LOCALCODE_BODY_LIMIT_BYTES:-1000000}"
+RELEASES_URL="${LOCALCODE_RELEASES_URL:-https://api.github.com/repos/ordishs/localcode/releases/latest}"
+TAP_FORMULA="ordishs/tap/localcode"
 export MASA_TOKEN="${MASA_TOKEN:-${LOCAL_LLM_API_KEY:-}}"
 
 usage() {
@@ -18,6 +20,7 @@ localcode wraps the pi coding agent and points it at the abila inference gateway
 Usage:
   localcode [pi args...]          start pi on the gateway model
   localcode init                  create or refresh the config dir
+  localcode update [--check]      upgrade localcode, or only report the latest release
   localcode doctor                check pi, token, gateway, gh, and web tools
   localcode models                list the models the gateway advertises
   localcode models --write        store the advertised model and its budget in config
@@ -38,6 +41,7 @@ Environment:
   LOCALCODE_CONTEXT          context budget in tokens, default 131072
   LOCALCODE_MAX_TOKENS       output budget in tokens, default 8192
   LOCALCODE_BODY_LIMIT_BYTES gateway request body cap, default 1000000
+  LOCALCODE_RELEASES_URL     latest release endpoint, default the GitHub API for ordishs/localcode
 
 Install pi from https://pi.dev first:
   npm install -g @earendil-works/pi-coding-agent
@@ -93,8 +97,26 @@ check() {
   fi
 }
 
+install_kind() {
+  if [[ -d "$ROOT/.git" ]]; then
+    print -r -- clone
+  elif [[ "$ROOT" == */Cellar/localcode/* ]]; then
+    print -r -- brew
+  else
+    print -r -- unknown
+  fi
+}
+
+latest_version() {
+  curl -fsS -m 5 "$RELEASES_URL" 2>/dev/null | jq -r '.tag_name // empty | ltrimstr("v")' 2>/dev/null || true
+}
+
+newer_than() {
+  [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" == "$1" ]]
+}
+
 case "${1:-}" in
-  run | init | doctor | models | install | remove | uninstall | packages | exa | gh | config | version | help | --help | -h)
+  run | init | update | doctor | models | install | remove | uninstall | packages | exa | gh | config | version | help | --help | -h)
     cmd="${1:-run}"
     shift
     ;;
@@ -123,6 +145,37 @@ case "$cmd" in
     print -r -- "model:      masa/$MODEL"
     print -r -- "gateway:    $BASE_URL"
     print -r -- "web tools:  bundled Exa $exa_state"
+    ;;
+
+  update)
+    latest="$(latest_version)"
+    if [[ "${1:-}" == "--check" ]]; then
+      print -r -- "localcode $VERSION"
+      if [[ -z "$latest" ]]; then
+        print -r -- "latest:   unknown, could not read $RELEASES_URL"
+      elif newer_than "$latest" "$VERSION"; then
+        print -r -- "latest:   $latest. Run: localcode update"
+      else
+        print -r -- "latest:   $latest, you are up to date"
+      fi
+      exit 0
+    fi
+    [[ $# -eq 0 ]] || die "usage: localcode update [--check]"
+    case "$(install_kind)" in
+      brew)
+        need_tool brew
+        brew upgrade "$TAP_FORMULA"
+        exec "$(brew --prefix "$TAP_FORMULA")/bin/localcode" init
+        ;;
+      clone)
+        need_tool git
+        git -C "$ROOT" pull --ff-only || die "cannot fast-forward $ROOT. Commit or stash local changes, then run: git -C $ROOT pull"
+        exec "$ROOT/bin/localcode" init
+        ;;
+      *)
+        die "cannot tell how localcode was installed. Reinstall with: brew install $TAP_FORMULA"
+        ;;
+    esac
     ;;
 
   doctor)
@@ -176,6 +229,10 @@ case "$cmd" in
     fi
     if [[ -n "${EXA_API_KEY:-}" ]]; then ok=0; detail="bundled web_search ready, value withheld"; else ok=1; detail="bundled web_search errors until you export one, or install another package"; fi
     check "EXA_API_KEY set" "$ok" "  $detail"
+    latest="$(latest_version)"
+    if [[ -n "$latest" ]] && newer_than "$latest" "$VERSION"; then
+      print -r -- "note     localcode $latest is available, you run $VERSION. Run: localcode update"
+    fi
     print -r -- "note     the gateway allows 2 concurrent requests per token. Run one localcode session per token."
     exit "$rc"
     ;;
