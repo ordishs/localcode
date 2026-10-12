@@ -21,6 +21,16 @@ environment. Your token has `repo` scope, so a write command changes real reposi
 Default to read-only commands (`gh pr view`, `gh run list`, `gh api`) and ask before
 anything that creates, pushes, comments, merges, or deletes.
 
+## Git branches
+
+When you work on a git branch, always use a git worktree. Do not switch branches in the
+main checkout. Do not run `git checkout` or `git switch` there to start the work.
+
+To start, run `git worktree add ../<repo>-<branch> -b <branch>` from the main checkout.
+To use an existing branch, omit `-b`. Do all edits, tests, and commits in the worktree.
+
+When the work is complete, tell the user. Remove the worktree only if the user asks.
+
 ## Web tools
 
 Web access is optional and comes from a tool, not from the model. Use it for current
