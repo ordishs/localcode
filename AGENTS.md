@@ -21,14 +21,18 @@ small.
 
 ## Gateway facts
 
-Confirm again before relying on these; the gateway owner can change them.
+Do not write limits into config. `localcode` reads them from `GET /v1/models` on every
+start. Confirm these again before relying on them. The gateway owner can change them.
 
-- Body cap 32 MiB. Over-limit requests return HTTP 413 `request body too large`.
-- Output cap 32768 tokens. The gateway clamps larger `max_tokens` values.
-- The gateway rewrites the `model` field. Client model choice has no effect.
-- 2 concurrent requests and 30 requests per minute per token.
-- The advertised model reports a 262144 context window. The default budget here is 262144
-  tokens.
+- Each model entry reports `context_window`, `max_output_tokens`, and `limits`
+  (`max_body_bytes`, `requests_per_minute`, `max_concurrent`).
+- The gateway does not rewrite the `model` field. It rejects a model it does not list with
+  HTTP 404 `model_not_found`, and a missing model with HTTP 400.
+- Over-limit bodies return HTTP 413 `request body too large`.
+- The gateway clamps larger `max_tokens` values to `max_output_tokens`.
+- These facts were checked against `llm_proxy` run locally on the dev machine. The live
+  gateway at llm.masa.gi needs the matching `llm_proxy` release before `localcode` works
+  against it.
 
 ## Style
 

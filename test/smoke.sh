@@ -76,27 +76,123 @@ expect "config points at the wrapper dir" "$LOCALCODE_HOME" "$out"
 step "init seeds the config dir"
 out="$("$LOCALCODE" init 2>&1)"
 expect "init reports the dir" 'config dir' "$out"
-expect_file "models.json seeded" "$LOCALCODE_HOME/models.json"
 expect_file "settings.json seeded" "$LOCALCODE_HOME/settings.json"
 expect_file "exa extension copied" "$LOCALCODE_HOME/extensions/exa.ts"
+if [[ -e "$ROOT/config/models.json" ]]; then
+  bad "no models.json ships in the repo"
+else
+  ok "no models.json ships in the repo"
+fi
 
-if jq -e '.providers.masa.apiKey == "$MASA_TOKEN"' "$LOCALCODE_HOME/models.json" >/dev/null 2>&1; then
-  ok "models.json holds no literal token"
+step "limits come from the gateway (fake gateway)"
+FAKE="$(mktemp -d -t localcode-fake)"
+cat >"$FAKE/ok.json" <<'JSON'
+{"object":"list","data":[
+ {"id":"model-a","context_window":131072,"max_model_len":131072,"max_output_tokens":32768,"limits":{"max_body_bytes":33554432,"requests_per_minute":30,"max_concurrent":2}},
+ {"id":"model-b","context_window":65536,"max_output_tokens":8192,"limits":{"max_body_bytes":33554432,"max_concurrent":2}},
+ {"id":"model-c","context_window":1000,"max_output_tokens":5000,"limits":{"max_body_bytes":33554432,"max_concurrent":2}}
+]}
+JSON
+cat >"$FAKE/old.json" <<'JSON'
+{"object":"list","data":[{"id":"model-a","max_model_len":131072}]}
+JSON
+cat >"$FAKE/small.json" <<'JSON'
+{"object":"list","data":[{"id":"model-a","context_window":1000000,"max_output_tokens":4096,"limits":{"max_body_bytes":1000,"max_concurrent":2}}]}
+JSON
+mkdir -p "$FAKE/bin"
+cat >"$FAKE/bin/pi" <<'SH'
+#!/bin/sh
+echo "FAKEPI dir=$PI_CODING_AGENT_DIR args=$*"
+SH
+chmod +x "$FAKE/bin/pi"
+
+start_fake() {
+  rm -f "$FAKE/port"
+  node "$ROOT/test/fakegateway.mjs" "$FAKE/$1.json" "$FAKE/port" &
+  FAKE_PID=$!
+  for _ in $(seq 1 50); do [[ -s "$FAKE/port" ]] && break; sleep 0.1; done
+  FAKE_URL="http://127.0.0.1:$(cat "$FAKE/port")/v1"
+}
+
+stop_fake() { kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null; }
+
+fake() {
+  local home="$1"
+  shift
+  env -u LOCALCODE_MODEL LOCALCODE_HOME="$home" LOCALCODE_BASE_URL="$FAKE_URL" MASA_TOKEN=fake-token "$@"
+}
+
+if command -v node >/dev/null 2>&1; then
+  start_fake ok
+  H="$FAKE/home-ok"
+
+  out="$(fake "$H" "$LOCALCODE" init 2>&1)"
+  expect "init names the first model" 'model: +masa/model-a' "$out"
+  expect "init reports gateway limits" 'context: +131072 tokens, max output 32768 tokens' "$out"
+  m="$H/models.json"
+  if [[ "$(jq -r '.providers.masa.models | map(.id) | join(",")' "$m")" == "model-a,model-b,model-c" ]]; then ok "models.json lists every gateway model"; else bad "models.json lists every gateway model"; fi
+  if [[ "$(jq -r '.providers.masa.models[0] | "\(.contextWindow) \(.maxTokens)"' "$m")" == "131072 32768" ]]; then ok "model-a limits copied from the gateway"; else bad "model-a limits copied from the gateway"; fi
+  if [[ "$(jq -r '.providers.masa.models[1] | "\(.contextWindow) \(.maxTokens)"' "$m")" == "65536 8192" ]]; then ok "model-b limits copied from the gateway"; else bad "model-b limits copied from the gateway"; fi
+  if jq -e '.providers.masa.apiKey == "$MASA_TOKEN"' "$m" >/dev/null 2>&1 && ! grep -rqF "fake-token" "$H"; then ok "no literal token in the config dir"; else bad "no literal token in the config dir"; fi
+  if [[ "$(jq -r '.providers.masa.baseUrl' "$m")" == "$FAKE_URL" ]]; then ok "baseUrl follows LOCALCODE_BASE_URL"; else bad "baseUrl follows LOCALCODE_BASE_URL"; fi
+  if [[ "$(jq -r '.compaction.modelOverrides["masa/model-a"].reserveTokens' "$H/settings.json")" == "32768" ]]; then ok "reserveTokens follows the output cap"; else bad "reserveTokens follows the output cap"; fi
+  if [[ "$(jq -r '.compaction.reserveTokens' "$H/settings.json")" == "16384" ]]; then ok "the user base reserveTokens is untouched"; else bad "the user base reserveTokens is untouched"; fi
+
+  out="$(fake "$H" env LOCALCODE_MODEL=model-b "$LOCALCODE" config 2>&1)"
+  expect "LOCALCODE_MODEL selects model-b with its own limits" 'model: +masa/model-b' "$out"
+  expect "config shows model-b context" 'context: +65536 tokens' "$out"
+  expect "config shows model-b output" 'max output: +8192 tokens' "$out"
+
+  out="$(fake "$H" env LOCALCODE_MODEL=model-c "$LOCALCODE" init 2>&1)"
+  if [[ "$(jq -r '.compaction.modelOverrides["masa/model-c"].reserveTokens' "$H/settings.json")" == "500" ]]; then ok "reserveTokens is capped at half the window"; else bad "reserveTokens is capped at half the window"; fi
+
+  out="$(fake "$H" env LOCALCODE_MODEL=nope "$LOCALCODE" init 2>&1)"
+  expect "unknown LOCALCODE_MODEL names the valid ids" 'not available.*model-a, model-b, model-c' "$out"
+
+  out="$(PATH="$FAKE/bin:$PATH" fake "$H" env LOCALCODE_MODEL=model-b "$LOCALCODE" -p hi 2>&1)"
+  expect "run uses the wrapper config dir" "FAKEPI dir=$H " "$out"
+  expect "run passes the discovered model to pi" 'args=--model masa/model-b' "$out"
+
+  out="$(fake "$H" "$LOCALCODE" models 2>&1)"
+  expect "models lists limits" 'model-a +131072 +32768' "$out"
+  out="$(fake "$H" "$LOCALCODE" models --write 2>&1 || true)"
+  expect "models --write is gone" 'usage: localcode models' "$out"
+
+  out="$(fake "$H" "$LOCALCODE" doctor 2>&1 || true)"
+  expect "doctor lists model limits" 'model-b +context 65536 +max output 8192' "$out"
+  expect "doctor passes a wide body budget" 'ok       request body budget' "$out"
+  expect "doctor reads concurrency from the gateway" 'allows 2 concurrent requests' "$out"
+
+  out="$(env LOCALCODE_HOME="$FAKE/home-badtoken" LOCALCODE_BASE_URL="$FAKE_URL" MASA_TOKEN=wrong "$LOCALCODE" init 2>&1)"
+  expect "bad token shows the gateway reply" 'gateway returned no models.*bad token' "$out"
+  out="$(env LOCALCODE_HOME="$FAKE/home-badtoken" LOCALCODE_BASE_URL="$FAKE_URL" MASA_TOKEN=wrong "$LOCALCODE" -p hi 2>&1; echo "rc=$?")"
+  expect "run refuses to start on a bad token" 'rc=1' "$out"
+  stop_fake
+
+  out="$(env LOCALCODE_HOME="$FAKE/home-down" LOCALCODE_BASE_URL="http://127.0.0.1:1/v1" MASA_TOKEN=fake-token "$LOCALCODE" init 2>&1; echo "rc=$?")"
+  expect "init survives an unreachable gateway" 'rc=0' "$out"
+  expect "unreachable gateway names LOCALCODE_BASE_URL" 'cannot reach the gateway.*LOCALCODE_BASE_URL' "$out"
+
+  start_fake old
+  out="$(fake "$FAKE/home-old" "$LOCALCODE" -p hi 2>&1; echo "rc=$?")"
+  expect "old llm_proxy without limits is refused" 'does not report context_window and max_output_tokens.*upgrade llm_proxy' "$out"
+  expect "old llm_proxy makes run exit 1" 'rc=1' "$out"
+  stop_fake
+
+  start_fake small
+  out="$(fake "$FAKE/home-small" "$LOCALCODE" doctor 2>&1 || true)"
+  expect "doctor flags a body cap below the context budget" 'PROBLEM  request body budget' "$out"
+  stop_fake
 else
-  bad "models.json holds no literal token"
+  skip "fake gateway checks (node is not installed)"
 fi
-ctx="$(jq -r '.providers.masa.models[0].contextWindow' "$LOCALCODE_HOME/models.json" 2>/dev/null)"
-if [[ "$ctx" == "262144" ]]; then
-  ok "context budget matches the model window"
-else
-  bad "context budget matches the model window (got ${ctx:-none})"
-fi
+rm -rf "$FAKE"
 
 step "doctor"
 out="$("$LOCALCODE" doctor 2>&1)"
 doctor_rc=$?
 printf '%s\n' "$out" | sed 's/^/      /'
-expect "doctor ran checks" 'request body budget' "$out"
+expect "doctor ran checks" 'MASA_TOKEN set' "$out"
 
 tok="${MASA_TOKEN:-${LOCAL_LLM_API_KEY:-}}"
 if [[ -n "$tok" ]] && printf '%s' "$out" | grep -qF -- "$tok"; then

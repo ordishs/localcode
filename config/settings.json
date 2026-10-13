@@ -1,6 +1,5 @@
 {
   "defaultProvider": "masa",
-  "defaultModel": "Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp",
   "defaultThinkingLevel": "off",
   "enabledModels": ["masa/*"],
   "compaction": {

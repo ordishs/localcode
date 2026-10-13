@@ -53,7 +53,7 @@ localcode update --check    # only report the latest release
 `brew upgrade ordishs/tap/localcode`. A clone runs `git pull --ff-only`. Both then run
 `localcode init`. `doctor` also tells you when a newer release exists.
 
-`init` keeps your `settings.json` and `models.json`. It overwrites `extensions/exa.ts`.
+`init` keeps your `settings.json`. It rewrites `models.json` from the gateway and overwrites `extensions/exa.ts`.
 
 ## How it works
 
@@ -62,8 +62,8 @@ your existing `~/.pi`. Everything it owns lives in one place:
 
 | Path | Contents |
 | --- | --- |
-| `~/.localcode/models.json` | the `masa` provider and its budget |
-| `~/.localcode/settings.json` | default model, thinking level, compaction |
+| `~/.localcode/models.json` | generated on every start from the gateway model list. Do not edit |
+| `~/.localcode/settings.json` | thinking level and compaction. localcode adds a per-model `reserveTokens` |
 | `~/.localcode/extensions/exa.ts` | bundled `websearch` and `webfetch` |
 | `~/.localcode/npm/` | tooling you install |
 | `~/.localcode/sessions/` | your sessions |
@@ -118,25 +118,37 @@ one to send hidden text to the model. The conversion time is linear in the page 
 real repositories. The appended system prompt tells the model to stay read-only unless you
 ask otherwise.
 
-## Gateway limits that affect configuration
+## Model and limits
 
-These were measured against the live gateway, not assumed:
+You do not set limits. On every start `localcode` asks the gateway for `GET /v1/models` and
+writes `~/.localcode/models.json` from the reply. For each model it copies:
 
-- The gateway rejects a request body over 32 MiB with HTTP 413 `request body too large`.
-  The default context budget is the 262144 tokens the model advertises. Lower it with
-  `LOCALCODE_CONTEXT` if you need smaller requests.
-- The gateway clamps output tokens to 32768. The default output budget is 32768.
-- The gateway rewrites the `model` field to the one allowed model. A request for
-  `totally-bogus-model-xyz` returned HTTP 200 with the configured model. The model choice
-  is made by the gateway owner, not by you.
-- The gateway allows 2 concurrent requests per token, so run one session per token.
+- `context_window` as the context size
+- `max_output_tokens` as the output size
 
-Check what your token can actually use, and store it:
+It also sets `compaction.modelOverrides["masa/<model>"].reserveTokens` in `settings.json`
+to the output size, so pi compacts before a full reply no longer fits. The reserve never
+exceeds half of the context window. Your own base `reserveTokens` stays as you set it.
+
+The gateway owns the limits: the model's context window from omlx, the output cap, the
+request body cap, and the rate limits (`limits` in the reply). `doctor` prints them and
+checks that a full context fits in the body cap. The gateway rejects any request for a
+model it does not list with HTTP 404 `model_not_found`.
+
+`localcode` uses the first model the gateway lists. To pick another one:
 
 ```bash
-./bin/localcode models
-./bin/localcode models --write
+./bin/localcode models                    # list ids with context and output limits
+export LOCALCODE_MODEL=<id>               # an id from that list
 ```
+
+An id that is not in the list stops `localcode` before pi starts and prints the valid ids.
+
+`localcode` needs an `llm_proxy` that reports `context_window` and `max_output_tokens`. If
+yours is older, `localcode` stops and tells you to ask the `llm_proxy` owner to upgrade it.
+
+The gateway allows a small number of concurrent requests per token, so run one session per
+token. `doctor` prints the number.
 
 ## Commands
 
@@ -145,7 +157,7 @@ localcode [pi args...]        start pi on the gateway model
 localcode doctor              check pi, token, gateway, gh, and web tools
 localcode init                create or refresh the config dir
 localcode update [--check]    upgrade localcode, or only report the latest release
-localcode models [--write]    list advertised models, or store one
+localcode models              list gateway models with their limits
 localcode install <source>    install your own tooling into the config dir
 localcode remove <source>     remove it
 localcode packages            list installed tooling

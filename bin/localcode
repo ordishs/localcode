@@ -5,10 +5,13 @@ VERSION="0.1.3"
 ROOT="${0:A:h:h}"
 LC_HOME="${LOCALCODE_HOME:-$HOME/.localcode}"
 BASE_URL="${LOCALCODE_BASE_URL:-https://llm.masa.gi/v1}"
-MODEL="${LOCALCODE_MODEL:-Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp}"
-CONTEXT_TOKENS="${LOCALCODE_CONTEXT:-262144}"
-MAX_TOKENS="${LOCALCODE_MAX_TOKENS:-32768}"
-BODY_LIMIT_BYTES="${LOCALCODE_BODY_LIMIT_BYTES:-1000000}"
+MODEL=""
+CONTEXT_TOKENS=0
+MAX_TOKENS=0
+BODY_LIMIT_BYTES=0
+MAX_CONCURRENT=0
+MODELS_JSON=""
+LC_ERR=""
 RELEASES_URL="${LOCALCODE_RELEASES_URL:-https://api.github.com/repos/ordishs/localcode/releases/latest}"
 TAP_FORMULA="ordishs/tap/localcode"
 export MASA_TOKEN="${MASA_TOKEN:-${LOCAL_LLM_API_KEY:-}}"
@@ -22,8 +25,7 @@ Usage:
   localcode init                  create or refresh the config dir
   localcode update [--check]      upgrade localcode, or only report the latest release
   localcode doctor                check pi, token, gateway, gh, and web tools
-  localcode models                list the models the gateway advertises
-  localcode models --write        store the advertised model and its budget in config
+  localcode models                list the gateway models with their context and output limits
   localcode install <source>      add your own tooling, for example npm:pi-web-access
   localcode remove <source>       remove tooling you installed
   localcode packages              list tooling installed in the config dir
@@ -37,10 +39,7 @@ Environment:
   EXA_API_KEY                optional, enables the bundled web_search tool
   LOCALCODE_HOME             config dir, default ~/.localcode
   LOCALCODE_BASE_URL         gateway endpoint, default https://llm.masa.gi/v1
-  LOCALCODE_MODEL            model id to advertise
-  LOCALCODE_CONTEXT          context budget in tokens, default 262144
-  LOCALCODE_MAX_TOKENS       output budget in tokens, default 32768
-  LOCALCODE_BODY_LIMIT_BYTES gateway request body cap, default 1000000
+  LOCALCODE_MODEL            model id to use, default the first model the gateway lists
   LOCALCODE_RELEASES_URL     latest release endpoint, default the GitHub API for ordishs/localcode
 
 Install pi from https://pi.dev first:
@@ -63,28 +62,75 @@ exa_enabled() {
 
 seed() {
   mkdir -p "$LC_HOME/extensions"
-  for file in settings.json models.json; do
-    [[ -e "$LC_HOME/$file" ]] || cp "$ROOT/config/$file" "$LC_HOME/$file"
-  done
+  [[ -e "$LC_HOME/settings.json" ]] || cp "$ROOT/config/settings.json" "$LC_HOME/settings.json"
   cp "$ROOT/extensions/exa.ts" "$LC_HOME/extensions/exa.ts"
-  apply_budget
 }
 
-apply_budget() {
-  local tmp
-  tmp="$(mktemp)"
-  jq --arg url "$BASE_URL" --arg model "$MODEL" --argjson ctx "$CONTEXT_TOKENS" --argjson out "$MAX_TOKENS" \
-    '.providers.masa.baseUrl = $url
-     | .providers.masa.models[] |= (select(.id == $model) | .contextWindow = $ctx | .maxTokens = $out)' \
-    "$LC_HOME/models.json" >"$tmp" || die "cannot rewrite models.json. Is jq installed and is the file valid JSON?"
-  mv "$tmp" "$LC_HOME/models.json"
-}
-
-gateway_models() {
+fetch_models() {
   local out
-  out="$(curl -sS -m 30 -H "Authorization: Bearer $MASA_TOKEN" "$BASE_URL/models")" || die "gateway request failed: $BASE_URL/models"
-  print -r -- "$out" | jq -e '.data | type == "array"' >/dev/null 2>&1 || die "gateway returned no model list: $(print -r -- "$out" | head -c 300)"
-  print -r -- "$out" | jq -r '.data[] | [.id, (.max_model_len // 0)] | @tsv'
+  if ! out="$(curl -sS -m 30 -H "Authorization: Bearer $MASA_TOKEN" "$BASE_URL/models" 2>&1)"; then
+    LC_ERR="cannot reach the gateway at $BASE_URL/models. Check your network and LOCALCODE_BASE_URL. curl said: $out"
+    return 1
+  fi
+  if ! print -r -- "$out" | jq -e '.data | type == "array" and length > 0' >/dev/null 2>&1; then
+    LC_ERR="gateway returned no models. Check MASA_TOKEN. Reply: $(print -r -- "$out" | head -c 300)"
+    return 1
+  fi
+  MODELS_JSON="$out"
+}
+
+select_model() {
+  local ids row
+  local -a list
+  ids="$(print -r -- "$MODELS_JSON" | jq -r '.data[].id')"
+  list=("${(@f)ids}")
+  if [[ -n "${LOCALCODE_MODEL:-}" ]]; then
+    if (( ! ${list[(Ie)$LOCALCODE_MODEL]} )); then
+      LC_ERR="model $LOCALCODE_MODEL is not available on the gateway. Available: ${(j:, :)list}. Set LOCALCODE_MODEL to one of them, or unset it."
+      return 1
+    fi
+    MODEL="$LOCALCODE_MODEL"
+  else
+    MODEL="${list[1]}"
+  fi
+  row="$(print -r -- "$MODELS_JSON" | jq -r --arg m "$MODEL" '.data[] | select(.id == $m) | [(.context_window // .max_model_len // 0), (.max_output_tokens // 0), (.limits.max_body_bytes // 0), (.limits.max_concurrent // 0)] | @tsv')"
+  read -r CONTEXT_TOKENS MAX_TOKENS BODY_LIMIT_BYTES MAX_CONCURRENT <<<"$row"
+  if (( CONTEXT_TOKENS <= 0 || MAX_TOKENS <= 0 )); then
+    LC_ERR="the gateway does not report context_window and max_output_tokens for $MODEL. Ask the llm_proxy owner to upgrade llm_proxy, then retry."
+    return 1
+  fi
+}
+
+write_models() {
+  local tmp reserve half
+  tmp="$(mktemp)"
+  print -r -- "$MODELS_JSON" | jq --arg url "$BASE_URL" '
+    {providers: {masa: {
+      baseUrl: $url,
+      api: "openai-completions",
+      apiKey: "$MASA_TOKEN",
+      models: [.data[]
+        | select((.context_window // .max_model_len // 0) > 0 and (.max_output_tokens // 0) > 0)
+        | {id: .id, name: (.id + " (abila gateway)"), reasoning: false, input: ["text"],
+           contextWindow: (.context_window // .max_model_len), maxTokens: .max_output_tokens,
+           cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}}]
+    }}}' >"$tmp" || die "cannot build models.json from the gateway reply"
+  mv "$tmp" "$LC_HOME/models.json"
+  half=$(( CONTEXT_TOKENS / 2 ))
+  reserve=$(( MAX_TOKENS < half ? MAX_TOKENS : half ))
+  tmp="$(mktemp)"
+  jq --arg key "masa/$MODEL" --argjson reserve "$reserve" \
+    '.compaction.modelOverrides[$key].reserveTokens = $reserve' \
+    "$LC_HOME/settings.json" >"$tmp" || die "cannot update $LC_HOME/settings.json. Is the file valid JSON?"
+  mv "$tmp" "$LC_HOME/settings.json"
+}
+
+sync_models() {
+  need_tool jq "Install: brew install jq"
+  [[ -n "$MASA_TOKEN" ]] || die "export MASA_TOKEN=<your gateway token>, or set LOCAL_LLM_API_KEY"
+  fetch_models || die "$LC_ERR"
+  select_model || die "$LC_ERR"
+  write_models
 }
 
 check() {
@@ -128,8 +174,8 @@ esac
 case "$cmd" in
   run)
     need_tool pi "Install pi from https://pi.dev: npm install -g @earendil-works/pi-coding-agent"
-    [[ -n "$MASA_TOKEN" ]] || die "export MASA_TOKEN=<your gateway token>, or set LOCAL_LLM_API_KEY"
     seed
+    sync_models
     args=(--model "masa/$MODEL" --append-system-prompt "$ROOT/config/system.md")
     if exa_enabled; then
       args+=(-e "$LC_HOME/extensions/exa.ts")
@@ -139,11 +185,19 @@ case "$cmd" in
 
   init)
     seed
+    print -r -- "config dir: $LC_HOME"
+    print -r -- "gateway:    $BASE_URL"
+    if [[ -z "$MASA_TOKEN" ]]; then
+      print -r -- "model:      unknown. Export MASA_TOKEN=<your gateway token>, then run: localcode init"
+    elif fetch_models && select_model; then
+      write_models
+      print -r -- "model:      masa/$MODEL"
+      print -r -- "context:    $CONTEXT_TOKENS tokens, max output $MAX_TOKENS tokens"
+    else
+      print -r -- "model:      unknown. $LC_ERR"
+    fi
     exa_state=off
     if exa_enabled; then exa_state=on; fi
-    print -r -- "config dir: $LC_HOME"
-    print -r -- "model:      masa/$MODEL"
-    print -r -- "gateway:    $BASE_URL"
     print -r -- "web tools:  bundled Exa $exa_state"
     ;;
 
@@ -198,21 +252,25 @@ case "$cmd" in
     if [[ -n "$MASA_TOKEN" ]]; then ok=0; detail="len ${#MASA_TOKEN}, value withheld"; else ok=1; detail="get a token from the llm_proxy owner, then: export MASA_TOKEN=<token>"; fi
     check "MASA_TOKEN set" "$ok" "  $detail"
     if [[ -n "$MASA_TOKEN" ]]; then
-      if models="$(gateway_models 2>&1)"; then ok=0; else ok=1; fi
-      check "gateway model list" "$ok"
+      if fetch_models; then ok=0; else ok=1; fi
+      check "gateway model list" "$ok" "${LC_ERR:-}"
       if [[ $ok -eq 0 ]]; then
-        print -r -- "$models" | sed 's/^/           /'
-        if ! print -r -- "$models" | grep -q "^$MODEL"; then
-          print -r -- "note     advertised list does not contain $MODEL. Run: localcode models --write"
+        print -r -- "$MODELS_JSON" | jq -r '.data[] | "           \(.id)  context \(.context_window // .max_model_len // "unknown")  max output \(.max_output_tokens // "unknown")"'
+        if select_model; then ok=0; else ok=1; fi
+        check "selected model" "$ok" "${MODEL:+$MODEL}${LC_ERR:+  $LC_ERR}"
+        if [[ $ok -eq 0 ]]; then
+          budget=$(( CONTEXT_TOKENS * 4 ))
+          if (( BODY_LIMIT_BYTES <= 0 )); then
+            check "request body budget" 1 "gateway did not report max_body_bytes. Ask the llm_proxy owner to upgrade llm_proxy."
+          else
+            if [[ $budget -lt $BODY_LIMIT_BYTES ]]; then ok=0; else ok=1; fi
+            detail="${CONTEXT_TOKENS} tokens x ~4 bytes = ${budget} bytes, gateway caps at ${BODY_LIMIT_BYTES}."
+            if [[ $ok -ne 0 ]]; then detail+=" A full context may fail with HTTP 413. Ask the llm_proxy owner to raise max_body_bytes."; fi
+            check "request body budget" "$ok" "$detail"
+          fi
         fi
-      else
-        print -r -- "           $models"
       fi
     fi
-    budget=$(( CONTEXT_TOKENS * 4 ))
-    if [[ $budget -lt $BODY_LIMIT_BYTES ]]; then ok=0; else ok=1; fi
-    check "request body budget" "$ok" \
-      "${CONTEXT_TOKENS} tokens x ~4 bytes = ${budget} bytes, gateway caps at ${BODY_LIMIT_BYTES}. Lower LOCALCODE_CONTEXT if you see HTTP 413."
     if [[ -d "$LC_HOME" ]] || mkdir -p "$LC_HOME" 2>/dev/null; then ok=0; else ok=1; fi
     if [[ $ok -eq 0 ]]; then
       if touch "$LC_HOME/.probe" 2>/dev/null; then ok=0; else ok=1; fi
@@ -233,23 +291,18 @@ case "$cmd" in
     if [[ -n "$latest" ]] && newer_than "$latest" "$VERSION"; then
       print -r -- "note     localcode $latest is available, you run $VERSION. Run: localcode update"
     fi
-    print -r -- "note     the gateway allows 2 concurrent requests per token. Run one localcode session per token."
+    if (( MAX_CONCURRENT > 0 )); then
+      print -r -- "note     the gateway allows $MAX_CONCURRENT concurrent requests per token. Run one localcode session per token."
+    fi
     exit "$rc"
     ;;
 
   models)
-    need_tool jq
-    [[ -n "$MASA_TOKEN" ]] || die "export MASA_TOKEN first"
-    if [[ "${1:-}" == "--write" ]]; then
-      first="$(gateway_models | head -1 | cut -f1)"
-      [[ -n "$first" ]] || die "gateway returned no models"
-      MODEL="$first"
-      apply_budget
-      print -r -- "stored model: masa/$MODEL"
-      print -r -- "also set LOCALCODE_MODEL=$MODEL to make it your default for this shell"
-    else
-      gateway_models
-    fi
+    need_tool jq "Install: brew install jq"
+    [[ $# -eq 0 ]] || die "usage: localcode models. localcode writes models.json itself on every start"
+    [[ -n "$MASA_TOKEN" ]] || die "export MASA_TOKEN=<your gateway token>, or set LOCAL_LLM_API_KEY"
+    fetch_models || die "$LC_ERR"
+    print -r -- "$MODELS_JSON" | jq -r '.data[] | [.id, (.context_window // .max_model_len // "unknown"), (.max_output_tokens // "unknown")] | @tsv' | column -t -s $'\t'
     ;;
 
   install | remove | uninstall)
@@ -282,9 +335,13 @@ case "$cmd" in
     print -r -- "project:       $ROOT"
     print -r -- "config dir:    $LC_HOME"
     print -r -- "gateway:       $BASE_URL"
-    print -r -- "model:         masa/$MODEL"
-    print -r -- "context:       $CONTEXT_TOKENS tokens"
-    print -r -- "max output:    $MAX_TOKENS tokens"
+    if [[ -n "$MASA_TOKEN" ]] && fetch_models && select_model; then
+      print -r -- "model:         masa/$MODEL"
+      print -r -- "context:       $CONTEXT_TOKENS tokens"
+      print -r -- "max output:    $MAX_TOKENS tokens"
+    else
+      print -r -- "model:         unknown. ${LC_ERR:-Export MASA_TOKEN=<your gateway token> to read it from the gateway.}"
+    fi
     print -r -- "web tools:     bundled Exa $exa_state"
     print -r -- "MASA_TOKEN:    ${MASA_TOKEN:+set, len ${#MASA_TOKEN}}"
     print -r -- "EXA_API_KEY:   ${EXA_API_KEY:+set}"
