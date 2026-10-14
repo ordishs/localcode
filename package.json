@@ -1,6 +1,6 @@
 {
   "name": "localcode",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "pi coding agent wrapper for the abila inference gateway at llm.masa.gi",
   "keywords": [
     "pi",
