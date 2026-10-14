@@ -152,12 +152,24 @@ if command -v node >/dev/null 2>&1; then
   out="$(PATH="$FAKE/bin:$PATH" fake "$H" env LOCALCODE_MODEL=model-b "$LOCALCODE" -p hi 2>&1)"
   expect "run uses the wrapper config dir" "FAKEPI dir=$H " "$out"
   expect "run passes the discovered model to pi" 'args=--model masa/model-b' "$out"
+  expect "run appends the generated system notes" "append-system-prompt $H/system.md" "$out"
+  sysmd="$(cat "$H/system.md")"
+  expect "system notes carry the gateway URL" "Gateway URL: $FAKE_URL" "$sysmd"
+  expect "system notes carry the model limits" 'Model: model-b' "$sysmd"
+  expect "system notes carry the context window" 'Context window: 65536 tokens' "$sysmd"
+  expect "system notes carry the output cap" 'Maximum output: 8192 tokens' "$sysmd"
+  expect "system notes carry the body cap" 'Maximum request body: 33554432 bytes' "$sysmd"
+  expect "system notes carry the concurrency cap" 'Maximum concurrent requests per token: 2' "$sysmd"
+  if grep -qE 'rewrites the .model. field|32 MiB|allows 2 concurrent' "$ROOT/config/system.md"; then bad "system.md holds no hardcoded gateway limits"; else ok "system.md holds no hardcoded gateway limits"; fi
 
   out="$(fake "$H" "$LOCALCODE" models 2>&1)"
   expect "models lists limits" 'model-a +131072 +32768' "$out"
   out="$(fake "$H" "$LOCALCODE" models --write 2>&1 || true)"
   expect "models --write is gone" 'usage: localcode models' "$out"
 
+  out="$(fake "$H" env -u EXA_API_KEY "$LOCALCODE" doctor 2>&1 || true)"
+  expect "a missing Exa key is a note" 'note     EXA_API_KEY is not set' "$out"
+  if printf '%s' "$out" | grep -q 'PROBLEM  EXA_API_KEY'; then bad "a missing Exa key is not a PROBLEM"; else ok "a missing Exa key is not a PROBLEM"; fi
   out="$(fake "$H" "$LOCALCODE" doctor 2>&1 || true)"
   expect "doctor lists model limits" 'model-b +context 65536 +max output 8192' "$out"
   expect "doctor passes a wide body budget" 'ok       request body budget' "$out"

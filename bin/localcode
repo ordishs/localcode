@@ -123,6 +123,27 @@ write_models() {
     '.compaction.modelOverrides[$key].reserveTokens = $reserve' \
     "$LC_HOME/settings.json" >"$tmp" || die "cannot update $LC_HOME/settings.json. Is the file valid JSON?"
   mv "$tmp" "$LC_HOME/settings.json"
+  write_system
+}
+
+write_system() {
+  local tmp
+  tmp="$(mktemp)"
+  {
+    cat "$ROOT/config/system.md"
+    print -r -- ""
+    print -r -- "## Gateway limits"
+    print -r -- ""
+    print -r -- "The gateway reported these limits when localcode started."
+    print -r -- ""
+    print -r -- "- Gateway URL: $BASE_URL"
+    print -r -- "- Model: $MODEL"
+    print -r -- "- Context window: $CONTEXT_TOKENS tokens"
+    print -r -- "- Maximum output: $MAX_TOKENS tokens"
+    if (( BODY_LIMIT_BYTES > 0 )); then print -r -- "- Maximum request body: $BODY_LIMIT_BYTES bytes"; fi
+    if (( MAX_CONCURRENT > 0 )); then print -r -- "- Maximum concurrent requests per token: $MAX_CONCURRENT"; fi
+  } >"$tmp" || die "cannot build $LC_HOME/system.md"
+  mv "$tmp" "$LC_HOME/system.md"
 }
 
 sync_models() {
@@ -176,7 +197,7 @@ case "$cmd" in
     need_tool pi "Install pi from https://pi.dev: npm install -g @earendil-works/pi-coding-agent"
     seed
     sync_models
-    args=(--model "masa/$MODEL" --append-system-prompt "$ROOT/config/system.md")
+    args=(--model "masa/$MODEL" --append-system-prompt "$LC_HOME/system.md")
     if exa_enabled; then
       args+=(-e "$LC_HOME/extensions/exa.ts")
     fi
@@ -265,7 +286,7 @@ case "$cmd" in
           else
             if [[ $budget -lt $BODY_LIMIT_BYTES ]]; then ok=0; else ok=1; fi
             detail="${CONTEXT_TOKENS} tokens x ~4 bytes = ${budget} bytes, gateway caps at ${BODY_LIMIT_BYTES}."
-            if [[ $ok -ne 0 ]]; then detail+=" A full context may fail with HTTP 413. Ask the llm_proxy owner to raise max_body_bytes."; fi
+            if [[ $ok -ne 0 ]]; then detail+=" A full context may fail with HTTP 413. Ask the gateway owner to raise max_body_bytes."; fi
             check "request body budget" "$ok" "$detail"
           fi
         fi
@@ -285,8 +306,11 @@ case "$cmd" in
       check "gh authenticated" "$ok"
       print -r -- "$auth" | sed 's/^/           /'
     fi
-    if [[ -n "${EXA_API_KEY:-}" ]]; then ok=0; detail="bundled web_search ready, value withheld"; else ok=1; detail="bundled web_search errors until you export one, or install another package"; fi
-    check "EXA_API_KEY set" "$ok" "  $detail"
+    if [[ -n "${EXA_API_KEY:-}" ]]; then
+      check "EXA_API_KEY set" 0 "  bundled web_search ready, value withheld"
+    else
+      print -r -- "note     EXA_API_KEY is not set. Bundled web_search errors until you export one, or install another package."
+    fi
     latest="$(latest_version)"
     if [[ -n "$latest" ]] && newer_than "$latest" "$VERSION"; then
       print -r -- "note     localcode $latest is available, you run $VERSION. Run: localcode update"
